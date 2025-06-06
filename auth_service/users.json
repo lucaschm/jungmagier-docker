@@ -1,0 +1,14 @@
+{
+  "bob": {
+    "salt": "rb5wI8iLCZIrvN+zuFzYQA==",
+    "hash": "BQYL3pRv69x48nRjyA9pDoXQne9VnbtHGf2htTAJybY="
+  },
+  "test_user_0": {
+    "salt": "57Mkyujj+k0C2cJXyZEyrw==",
+    "hash": "uPVl9o/dQqXQimvPlAztv9DoOJhti2fVa/IwsAv9r8Y="
+  },
+  "test_user_1": {
+    "salt": "0ITB1lmvFbEzOTuQu7o9LA==",
+    "hash": "gAW7g+l5gPRQ1P9ehNuVPbcgOUiqzTRveJQ6dW03DOw="
+  }
+}
