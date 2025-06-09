@@ -6,6 +6,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip
+
 RUN pip install -r requirements.txt
 
 COPY . /app
