@@ -10,5 +10,19 @@
   "test_user_1": {
     "salt": "0ITB1lmvFbEzOTuQu7o9LA==",
     "hash": "gAW7g+l5gPRQ1P9ehNuVPbcgOUiqzTRveJQ6dW03DOw="
+  },
+  "Peter": {
+    "salt": "/qZU7aIkkCHKt5iPd1zykQ==",
+    "hash": "JfMTL0wGyGeL6VF06ZDJuPcAwR2h1PsfW+5loR+OfJA=",
+    "totp_secret": "XBQKEEPNWGFKHVTUFPWRAGLUSCFGDMLV"
+  },
+  "Justin": {
+    "salt": "X2f41/HPABopkBUu7LVU0w==",
+    "hash": "tctzyIEoSUoMfFIfLAuwYn2W/yCf6wgrJc/URrCSR7g=",
+    "totp_secret": "R37ALHUALZU7R67MOHANYAKZNI3SRDHC"
+  },
+  "Lol": {},
+  "Lol2": {
+    "totp_secret": "4GSO2H37WOVI272RTA3OX4FW6WHBQH5Y"
   }
 }
