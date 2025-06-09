@@ -22,8 +22,8 @@ services:
     container_name: auth_service
     volumes: 
       - ./auth_service:/app
-    expose:
-      - "5000"
+    ports:
+      - "5001:5000"
     networks:
       - webnet
 

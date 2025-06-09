@@ -1,0 +1,4 @@
+flask
+pyotp
+qrcode[pil]
+webauthn==1.11.1 

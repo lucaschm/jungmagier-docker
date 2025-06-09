@@ -1,7 +1,16 @@
 {
   "bob": {
     "salt": "rb5wI8iLCZIrvN+zuFzYQA==",
-    "hash": "BQYL3pRv69x48nRjyA9pDoXQne9VnbtHGf2htTAJybY="
+    "hash": "BQYL3pRv69x48nRjyA9pDoXQne9VnbtHGf2htTAJybY=",
+    "passkeys": [
+      {
+        "id": "oQWRDBvMylJQWnKhsOJERSW-pNU",
+        "public_key": "pQECAyYgASFYIIuxBAUM2XJ9anDQxnEugLyLVrHmkVMdP13pTvQbgCFbIlgguoitIvvvhxjErnGzhoBGKFuEwfWCQOvUNYWeD2h+Csw=",
+        "sign_count": 0,
+        "created_at": "cd2c44b5-bb48-49b0-bfa9-bba0a06ac3ee"
+      }
+    ],
+    "totp_secret": "CXWEWYKTZZE4RIWXEHJOKNJUA3NP6HZ3"
   },
   "test_user_0": {
     "salt": "57Mkyujj+k0C2cJXyZEyrw==",
@@ -19,10 +28,65 @@
   "Justin": {
     "salt": "X2f41/HPABopkBUu7LVU0w==",
     "hash": "tctzyIEoSUoMfFIfLAuwYn2W/yCf6wgrJc/URrCSR7g=",
-    "totp_secret": "R37ALHUALZU7R67MOHANYAKZNI3SRDHC"
+    "totp_secret": "R37ALHUALZU7R67MOHANYAKZNI3SRDHC",
+    "passkeys": [
+      {
+        "id": "n6FEktG4tuxmFreSBCFTKSBtA6I",
+        "public_key": "pQECAyYgASFYICeg5LeAwJ2LlWvX4ddKelYMrGTuWYVBIx+yXCKoDvbBIlggW6+ZVbqZl/jZDDX41EfqGRN7vwsj4e1G84XybDjyaNg=",
+        "sign_count": 0,
+        "created_at": "6ff4fe87-82ab-445e-8e89-856bd4688967"
+      }
+    ]
   },
   "Lol": {},
   "Lol2": {
-    "totp_secret": "4GSO2H37WOVI272RTA3OX4FW6WHBQH5Y"
+    "totp_secret": "4GSO2H37WOVI272RTA3OX4FW6WHBQH5Y",
+    "passkeys": [
+      {
+        "id": "DOZ4H_9FPZyGAJAm6ChnSMdE2ms",
+        "public_key": "pQECAyYgASFYIPHPl5q1OsqIsoGeA04JH1WNLmJHbnTsaQPH9s1XBVmKIlggwCi/aUQqgIiOlNL6Zxjh8/eHPK8l6G606XQSiEPTvTY=",
+        "sign_count": 0,
+        "created_at": "3e077498-e5cf-42ec-afb1-b11bcf15f1ab"
+      }
+    ]
+  },
+  "Johan": {},
+  "ASD": {},
+  "testuser": {},
+  "Passkey": {},
+  "Nona": {},
+  "Beb": {},
+  "LAA": {
+    "passkeys": [
+      {
+        "id": "TbeXtpzFlMClQJHH1tD4vYd1RAw",
+        "public_key": "pQECAyYgASFYIIbxHkCubS4R3WyxT2AT4lxegF7HnlOukIvr4o8dkMnXIlggGEfGJSLwcGU2Ca1yXxmRk08V9xUJq5OhPG/k/5ctC20=",
+        "sign_count": 0,
+        "created_at": "70a4417b-f3a1-40a3-9136-5185c0658fc1"
+      }
+    ]
+  },
+  "OnlyPassKey": {
+    "passkeys": [
+      {
+        "id": "fU2sZFaXa6Dj6wctyHa1CWxko8EVgN5hjRxL_ugBw08",
+        "public_key": "pQECAyYgASFYIIwAKAtDhzeNacdGCakVPRplvLt6Ybo23BtM+sXHfwuAIlggVWg4sggC9DGkwSn7DwtiFFBhRW4x7Hg1Yd3VG7gzmKs=",
+        "sign_count": 0,
+        "created_at": "0dbf1811-f8a3-4dd6-b4d3-b16a113a7a2a"
+      }
+    ]
+  },
+  "Moritz": {
+    "totp_secret": "6JDE2MRU36ZT6RF7OS2UYNKMVUAL5YSX"
+  },
+  "Marvin": {
+    "passkeys": [
+      {
+        "id": "xOz9rP5u83qufHP0s6DCfkUgLug",
+        "public_key": "pQECAyYgASFYIJl2merrxv5d+1dNtCWEoVx7LZTf+tmvoksWegIF8S1JIlgg7VwhOLDmTeCUYVzZjSf1VwuMEWErPDs7daT2J/WrT6A=",
+        "sign_count": 0,
+        "created_at": "281028f3-4051-4503-904a-f553379b2585"
+      }
+    ]
   }
 }
