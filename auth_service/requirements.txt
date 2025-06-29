@@ -1,4 +1,5 @@
 flask
 pyotp
 qrcode[pil]
-webauthn==1.11.1 
+webauthn==1.11.1
+cryptography 

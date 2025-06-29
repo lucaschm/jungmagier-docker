@@ -7,6 +7,11 @@ from webauthn import generate_registration_options, verify_registration_response
 from webauthn.helpers.structs import AuthenticatorSelectionCriteria, UserVerificationRequirement, AttestationConveyancePreference, AuthenticatorAttachment
 from webauthn.helpers.cose import COSEAlgorithmIdentifier
 import uuid
+import time
+import secrets
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 app = Flask(__name__)
 app.secret_key = os.urandom(16)
@@ -16,6 +21,9 @@ USER_FILE = "users.json"
 RP_ID = "merkur"  # Domain name 
 RP_NAME = "HAW IT-Security Lab"
 ORIGIN = "https://auth.merkur"  # origin
+
+# Implicit Login configuration
+implicit_sessions = {}  # Stores active implicit login sessions
 
 LOGIN_HTML = '''
 <h2>Login</h2>
@@ -28,6 +36,7 @@ LOGIN_HTML = '''
 <p>{{ message }}</p>
 <p><a href="/register">Neuen Benutzer registrieren</a></p>
 <p><a href="/passkey-login">Mit Passkey anmelden</a></p>
+<p><a href="/implicit-login">Impliziter Login (ohne Passwort-Übertragung)</a></p>
 '''
 
 def load_users():
@@ -63,6 +72,131 @@ def hash_password(password, salt=None):
         salt = os.urandom(16)
     hash_ = hashlib.pbkdf2_hmac("sha256", password, salt, 100000)
     return base64.b64encode(salt).decode(), base64.b64encode(hash_).decode()
+
+def derive_shared_key(username):
+    """Derive shared encryption key from user's password hash"""
+    users = load_users()
+    user = users.get(username)
+    if not user:
+        return None
+    
+    # Use password hash as shared secret
+    if 'hash' in user:
+        shared_secret = base64.b64decode(user['hash'])
+    else:
+        return None
+    
+    # Derive a proper encryption key using PBKDF2
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b'implicit_login_salt',  # Fixed salt for consistency
+        iterations=1000,  # Fewer iterations since we're deriving from already-hashed data
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(shared_secret))
+    return Fernet(key)
+
+def encrypt_aes(plaintext, key_b64):
+    """AES-GCM encryption"""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        
+        # Use first 32 bytes of PBKDF2 hash as AES-256 key
+        key_bytes = base64.b64decode(key_b64)[:32]
+        
+        # Generate random nonce (96 bits for GCM)
+        nonce = os.urandom(12)
+        
+        # Create AES-GCM cipher
+        aesgcm = AESGCM(key_bytes)
+        
+        # Encrypt with authentication
+        ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+        
+        # Combine nonce + ciphertext for transmission
+        combined = nonce + ciphertext
+        return base64.b64encode(combined).decode()
+        
+    except Exception as e:
+        print(f"AES encryption error: {e}")
+        return None
+
+def decrypt_aes(ciphertext_b64, key_b64):
+    """AES-GCM decryption (production-ready)"""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        
+        # Use first 32 bytes of PBKDF2 hash as AES-256 key
+        key_bytes = base64.b64decode(key_b64)[:32]
+        
+        # Decode combined data
+        combined = base64.b64decode(ciphertext_b64)
+        
+        # Split nonce (first 12 bytes) and ciphertext
+        nonce = combined[:12]
+        ciphertext = combined[12:]
+        
+        # Create AES-GCM cipher
+        aesgcm = AESGCM(key_bytes)
+        
+        # Decrypt and verify authentication
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        return plaintext.decode('utf-8')
+        
+    except Exception as e:
+        print(f"AES decryption error: {e}")
+        return None
+
+def encrypt_with_session_key(plaintext, session_key):
+    """Encrypt with session key (base64 encoded)"""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        
+        # Decode session key and ensure 32 bytes for AES-256
+        key_bytes = base64.urlsafe_b64decode(session_key + '==')[:32]
+        
+        # Generate random nonce (96 bits for GCM)
+        nonce = os.urandom(12)
+        
+        # Create AES-GCM cipher
+        aesgcm = AESGCM(key_bytes)
+        
+        # Encrypt with authentication
+        ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+        
+        # Combine nonce + ciphertext for transmission
+        combined = nonce + ciphertext
+        return base64.b64encode(combined).decode()
+        
+    except Exception as e:
+        print(f"Session key encryption error: {e}")
+        return None
+
+def decrypt_with_session_key(ciphertext_b64, session_key):
+    """Decrypt with session key"""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        
+        # Decode session key and ensure 32 bytes for AES-256
+        key_bytes = base64.urlsafe_b64decode(session_key + '==')[:32]
+        
+        # Decode combined data
+        combined = base64.b64decode(ciphertext_b64)
+        
+        # Split nonce (first 12 bytes) and ciphertext
+        nonce = combined[:12]
+        ciphertext = combined[12:]
+        
+        # Create AES-GCM cipher
+        aesgcm = AESGCM(key_bytes)
+        
+        # Decrypt and verify authentication
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        return plaintext.decode('utf-8')
+        
+    except Exception as e:
+        print(f"Session key decryption error: {e}")
+        return None
 
 @app.route("/", methods=["GET", "POST"])
 def login():
@@ -262,6 +396,704 @@ def welcome():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+# Implicit Login Routes
+@app.route("/implicit-login")
+def implicit_login_page():
+    return render_template_string("""
+        <h2>Impliziter Login</h2>
+        
+        <div id="step1">
+            <h3>Schritt 1: Benutzer</h3>
+            <input id="username" placeholder="Benutzername"><br><br>
+            <button onclick="loadUser()">Weiter</button>
+        </div>
+        
+        <div id="step2" style="display:none;">
+            <h3>Schritt 2: Shared Key</h3>
+            <p>Salt: <span id="saltDisplay"></span></p>
+            
+            <h4>Option A: Passwort hashen</h4>
+            <input id="password" type="password" placeholder="Passwort"><br><br>
+            <button onclick="hashPassword()">Hash berechnen</button>
+            
+            <div id="hashResult" style="display:none;">
+                <p>🔐 PBKDF2-Hash: <code id="clientHashDisplay"></code></p>
+                <p>🔒 Verschlüsselung: AES-256-GCM</p>
+            </div>
+            
+            <h4>Option B: Hash direkt eingeben</h4>
+            <textarea id="directHashInput" placeholder="Shared Key eingeben..."></textarea><br><br>
+            <button onclick="useDirectHash()">Verwenden</button>
+        </div>
+        
+        <div id="step3" style="display:none;">
+            <h3>Schritt 3: Login</h3>
+            <textarea id="sharedKeyInput" placeholder="Shared Key"></textarea><br><br>
+            <button onclick="verifyHashAndLogin()">Login starten</button>
+            
+            <div id="hashComparison" style="display:none;">
+                <p>Client: <code id="clientHashComp"></code></p>
+                <p>Server: <code id="serverHashComp"></code></p>
+                <p id="hashMatchResult"></p>
+            </div>
+        </div>
+        
+        <div id="step4" style="display:none;">
+            <h3>🎉 Login erfolgreich</h3>
+            
+            <p>Client Nonce: <span id="clientNonceEcho"></span></p>
+            <p>Server Nonce: <span id="serverNonce"></span></p>
+            <p>Session ID: <span id="sessionIdDisplay"></span></p>
+            
+            <h4>💬 Nachrichten</h4>
+            <input id="message" placeholder="Nachricht"><br><br>
+            <button onclick="sendMessage()">Senden</button>
+            <div id="response"></div>
+            
+            <h4>📊 Session Status</h4>
+            <button onclick="checkSessionStatus()">Session prüfen</button>
+            <div id="sessionStatus"></div>
+        </div>
+        
+        <div id="messages"></div>
+        <p><a href="/">Zurück zum normalen Login</a></p>
+        
+        <script>
+        let currentUsername = '';
+        let currentSalt = '';
+        let currentClientHash = '';
+        let sessionId = '';
+        let currentSessionKey = '';
+        
+        async function loadUser() {
+            currentUsername = document.getElementById('username').value;
+            if (!currentUsername) {
+                alert('Benutzername erforderlich');
+                return;
+            }
+            
+            try {
+                document.getElementById('messages').innerHTML = '<p>Lade Benutzer...</p>';
+                
+                const saltResponse = await fetch('/get-salt/' + currentUsername);
+                if (!saltResponse.ok) {
+                    throw new Error('Benutzer nicht gefunden');
+                }
+                const {salt} = await saltResponse.json();
+                currentSalt = salt;
+                
+                document.getElementById('saltDisplay').textContent = salt;
+                document.getElementById('step1').style.display = 'none';
+                document.getElementById('step2').style.display = 'block';
+                document.getElementById('messages').innerHTML = '<p>✅ Benutzer geladen</p>';
+                
+            } catch (error) {
+                document.getElementById('messages').innerHTML = '<p>❌ ' + error.message + '</p>';
+            }
+        }
+        
+        async function hashPassword() {
+            const password = document.getElementById('password').value;
+            if (!password) {
+                alert('Passwort erforderlich');
+                return;
+            }
+            
+            try {
+                document.getElementById('messages').innerHTML += '<p>Berechne Hash...</p>';
+                
+                const sharedKey = await deriveSharedKey(password, currentSalt);
+                currentClientHash = sharedKey;
+                
+                document.getElementById('clientHashDisplay').textContent = sharedKey;
+                document.getElementById('hashResult').style.display = 'block';
+                document.getElementById('step2').style.display = 'none';
+                document.getElementById('step3').style.display = 'block';
+                
+                // Auto-fill the hash in the textarea
+                document.getElementById('sharedKeyInput').value = sharedKey;
+                
+                document.getElementById('messages').innerHTML += '<p>✅ Hash berechnet</p>';
+                
+            } catch (error) {
+                document.getElementById('messages').innerHTML += '<p>❌ ' + error.message + '</p>';
+            }
+        }
+        
+        async function useDirectHash() {
+            const directHash = document.getElementById('directHashInput').value.trim();
+            if (!directHash) {
+                alert('Shared Key erforderlich');
+                return;
+            }
+            
+            try {
+                currentClientHash = directHash;
+                
+                document.getElementById('step2').style.display = 'none';
+                document.getElementById('step3').style.display = 'block';
+                
+                // Auto-fill the hash in the textarea
+                document.getElementById('sharedKeyInput').value = directHash;
+                
+                document.getElementById('messages').innerHTML += '<p>✅ Shared Key übernommen</p>';
+                
+            } catch (error) {
+                document.getElementById('messages').innerHTML += '<p style="color:red;">❌ Fehler: ' + error.message + '</p>';
+            }
+        }
+        
+        async function verifyHashAndLogin() {
+            const inputHash = document.getElementById('sharedKeyInput').value.trim();
+            if (!inputHash) {
+                alert('Bitte Hash eingeben');
+                return;
+            }
+            
+            try {
+                // 1. Hash-Vergleich anzeigen
+                document.getElementById('hashComparison').style.display = 'block';
+                document.getElementById('clientHashComp').textContent = inputHash;
+                
+                // Get server hash for comparison
+                const usersResponse = await fetch('/get-user-hash/' + currentUsername);
+                let serverHash = '';
+                let hashMatch = false;
+                
+                if (usersResponse.ok) {
+                    const userData = await usersResponse.json();
+                    serverHash = userData.hash;
+                    document.getElementById('serverHashComp').textContent = serverHash;
+                    
+                    hashMatch = (inputHash === serverHash);
+                    
+                    if (hashMatch) {
+                        document.getElementById('hashMatchResult').innerHTML = '<p>✅ Hash stimmt überein</p>';
+                    } else {
+                        document.getElementById('hashMatchResult').innerHTML = '<p>❌ Hash stimmt nicht überein</p>';
+                        return;
+                    }
+                }
+                
+                // 2. Implicit Login starten
+                document.getElementById('messages').innerHTML += '<p>Starte Login...</p>';
+                
+                const clientNonce = Date.now().toString();
+                const encryptedNonce = await encryptWithKey(clientNonce, inputHash);
+                
+                const response = await fetch('/implicit-login/challenge', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        username: currentUsername,
+                        encrypted_nonce: encryptedNonce
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    // Decrypt server response (XOR is symmetric, so we use the same function)
+                    const encryptedBase64 = result.encrypted_response;
+                    console.log('Encrypted response from server:', encryptedBase64);
+                    
+                    // Decrypt: XOR the base64-decoded data with our key
+                    const decryptedResponse = await decryptWithKey(encryptedBase64, inputHash);
+                    console.log('Decrypted response:', decryptedResponse);
+                    
+                    const responseData = JSON.parse(decryptedResponse);
+                    
+                    // Verify client nonce
+                    if (responseData.client_nonce !== clientNonce) {
+                        throw new Error('Server nonce verification failed');
+                    }
+                    
+                    sessionId = responseData.session_id;
+                    currentSessionKey = responseData.session_key;
+                    
+                    // Show success
+                    document.getElementById('step3').style.display = 'none';
+                    document.getElementById('step4').style.display = 'block';
+                    
+                    // Show server response details
+                    document.getElementById('clientNonceEcho').textContent = responseData.client_nonce;
+                    document.getElementById('serverNonce').textContent = responseData.server_nonce;
+                    document.getElementById('sessionIdDisplay').textContent = responseData.session_id;
+                    
+                    document.getElementById('messages').innerHTML += '<p>🎉 Login erfolgreich</p>';
+                } else {
+                    document.getElementById('messages').innerHTML += '<p>❌ Login fehlgeschlagen: ' + result.error + '</p>';
+                }
+                
+            } catch (error) {
+                document.getElementById('messages').innerHTML += '<p>❌ ' + error.message + '</p>';
+            }
+        }
+        
+        async function sendMessage() {
+            const message = document.getElementById('message').value;
+            if (!message) {
+                alert('Nachricht erforderlich');
+                return;
+            }
+            
+            try {
+                // Get session key from stored session data
+                const sessionKey = currentSessionKey;
+                if (!sessionKey) {
+                    document.getElementById('response').innerHTML = '<p>❌ Session Key nicht verfügbar</p>';
+                    return;
+                }
+                
+                // Encrypt message with session key
+                const encryptedMessage = await encryptWithSessionKey(message, sessionKey);
+                
+                const response = await fetch('/implicit-login/message', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        encrypted_message: encryptedMessage
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    // Decrypt server response
+                    const decryptedResponse = await decryptWithSessionKey(result.encrypted_response, sessionKey);
+                    document.getElementById('response').innerHTML = '<p>Server: ' + decryptedResponse + '</p>';
+                    document.getElementById('message').value = '';
+                } else {
+                    document.getElementById('response').innerHTML = '<p>❌ ' + result.error + '</p>';
+                }
+                
+            } catch (error) {
+                document.getElementById('response').innerHTML = '<p>❌ ' + error.message + '</p>';
+            }
+        }
+        
+        async function checkSessionStatus() {
+            try {
+                const response = await fetch('/implicit-login/status');
+                const result = await response.json();
+                
+                let statusHtml = '<p>Aktive Sessions: ' + result.active_sessions + '</p>';
+                
+                if (result.sessions.length > 0) {
+                    statusHtml += '<ul>';
+                    result.sessions.forEach(session => {
+                        const isOwnSession = (session.session_id === sessionId);
+                        statusHtml += '<li>' + 
+                            (isOwnSession ? '<strong>' : '') +
+                            session.username + ' (' + session.session_id.substring(0, 8) + '...) - ' +
+                            'Alter: ' + session.age_seconds + 's, ' +
+                            'Läuft ab in: ' + session.expires_in + 's' +
+                            (isOwnSession ? ' [DEINE SESSION]</strong>' : '') +
+                            '</li>';
+                    });
+                    statusHtml += '</ul>';
+                }
+                
+                document.getElementById('sessionStatus').innerHTML = statusHtml;
+                
+            } catch (error) {
+                document.getElementById('sessionStatus').innerHTML = '<p>❌ ' + error.message + '</p>';
+            }
+        }
+        
+        // Crypto functions for client-side hashing
+        async function deriveSharedKey(password, salt) {
+            // Convert salt from base64
+            const saltBytes = base64ToArrayBuffer(salt);
+            const passwordBytes = new TextEncoder().encode(password);
+            
+            // Import password as key material
+            const keyMaterial = await crypto.subtle.importKey(
+                'raw',
+                passwordBytes,
+                'PBKDF2',
+                false,
+                ['deriveBits']
+            );
+            
+            // Derive key using same parameters as server
+            const derivedBits = await crypto.subtle.deriveBits({
+                name: 'PBKDF2',
+                salt: saltBytes,
+                iterations: 100000,  // Same as server
+                hash: 'SHA-256'
+            }, keyMaterial, 256);  // 32 bytes = 256 bits
+            
+            // Convert to base64 for consistency with server
+            return arrayBufferToBase64(derivedBits);
+        }
+        
+        async function encryptWithKey(plaintext, keyBase64) {
+            // AES-GCM encryption using Web Crypto API
+            try {
+                // Decode base64 key and use first 32 bytes for AES-256
+                const keyBytes = base64ToUint8Array(keyBase64).slice(0, 32);
+                
+                // Import key for AES-GCM
+                const cryptoKey = await crypto.subtle.importKey(
+                    'raw',
+                    keyBytes,
+                    { name: 'AES-GCM' },
+                    false,
+                    ['encrypt']
+                );
+                
+                // Generate random IV (96 bits for GCM)
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                
+                // Convert plaintext to bytes
+                const textBytes = new TextEncoder().encode(plaintext);
+                
+                // Encrypt with AES-GCM
+                const encrypted = await crypto.subtle.encrypt(
+                    { name: 'AES-GCM', iv: iv },
+                    cryptoKey,
+                    textBytes
+                );
+                
+                // Combine IV + encrypted data
+                const combined = new Uint8Array(iv.length + encrypted.byteLength);
+                combined.set(iv, 0);
+                combined.set(new Uint8Array(encrypted), iv.length);
+                
+                // Convert to base64
+                return uint8ArrayToBase64(combined);
+                
+            } catch (error) {
+                console.error('AES encryption error:', error);
+                throw new Error('AES-Verschlüsselung fehlgeschlagen');
+            }
+        }
+        
+        function base64ToUint8Array(base64) {
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes;
+        }
+        
+        function uint8ArrayToBase64(bytes) {
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+        
+        async function decryptWithKey(ciphertextBase64, keyBase64) {
+            // AES-GCM decryption using Web Crypto API
+            try {
+                // Decode base64 key and use first 32 bytes for AES-256
+                const keyBytes = base64ToUint8Array(keyBase64).slice(0, 32);
+                
+                // Import key for AES-GCM
+                const cryptoKey = await crypto.subtle.importKey(
+                    'raw',
+                    keyBytes,
+                    { name: 'AES-GCM' },
+                    false,
+                    ['decrypt']
+                );
+                
+                // Decode combined data
+                const combined = base64ToUint8Array(ciphertextBase64);
+                
+                // Split IV (first 12 bytes) and ciphertext
+                const iv = combined.slice(0, 12);
+                const ciphertext = combined.slice(12);
+                
+                // Decrypt with AES-GCM
+                const decrypted = await crypto.subtle.decrypt(
+                    { name: 'AES-GCM', iv: iv },
+                    cryptoKey,
+                    ciphertext
+                );
+                
+                // Convert back to string
+                return new TextDecoder().decode(decrypted);
+                
+            } catch (error) {
+                console.error('AES decryption error:', error);
+                throw new Error('AES-Entschlüsselung fehlgeschlagen');
+            }
+        }
+        
+        function base64ToArrayBuffer(base64) {
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+        
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+        
+        async function encryptWithSessionKey(plaintext, sessionKey) {
+            // Session key encryption using Web Crypto API (AES-GCM)
+            try {
+                // Decode session key (URL-safe base64) and use first 32 bytes for AES-256
+                const keyBytes = base64UrlToUint8Array(sessionKey).slice(0, 32);
+                
+                // Import key for AES-GCM
+                const cryptoKey = await crypto.subtle.importKey(
+                    'raw',
+                    keyBytes,
+                    { name: 'AES-GCM' },
+                    false,
+                    ['encrypt']
+                );
+                
+                // Generate random IV (96 bits for GCM)
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                
+                // Convert plaintext to bytes
+                const textBytes = new TextEncoder().encode(plaintext);
+                
+                // Encrypt with AES-GCM
+                const encrypted = await crypto.subtle.encrypt(
+                    { name: 'AES-GCM', iv: iv },
+                    cryptoKey,
+                    textBytes
+                );
+                
+                // Combine IV + encrypted data
+                const combined = new Uint8Array(iv.length + encrypted.byteLength);
+                combined.set(iv, 0);
+                combined.set(new Uint8Array(encrypted), iv.length);
+                
+                // Convert to base64
+                return uint8ArrayToBase64(combined);
+                
+            } catch (error) {
+                console.error('Session key encryption error:', error);
+                throw new Error('Session Key Verschlüsselung fehlgeschlagen');
+            }
+        }
+        
+        async function decryptWithSessionKey(ciphertextBase64, sessionKey) {
+            // Session key decryption using Web Crypto API (AES-GCM)
+            try {
+                // Decode session key (URL-safe base64) and use first 32 bytes for AES-256
+                const keyBytes = base64UrlToUint8Array(sessionKey).slice(0, 32);
+                
+                // Import key for AES-GCM
+                const cryptoKey = await crypto.subtle.importKey(
+                    'raw',
+                    keyBytes,
+                    { name: 'AES-GCM' },
+                    false,
+                    ['decrypt']
+                );
+                
+                // Decode combined data
+                const combined = base64ToUint8Array(ciphertextBase64);
+                
+                // Split IV (first 12 bytes) and ciphertext
+                const iv = combined.slice(0, 12);
+                const ciphertext = combined.slice(12);
+                
+                // Decrypt with AES-GCM
+                const decrypted = await crypto.subtle.decrypt(
+                    { name: 'AES-GCM', iv: iv },
+                    cryptoKey,
+                    ciphertext
+                );
+                
+                // Convert back to string
+                return new TextDecoder().decode(decrypted);
+                
+            } catch (error) {
+                console.error('Session key decryption error:', error);
+                throw new Error('Session Key Entschlüsselung fehlgeschlagen');
+            }
+        }
+        
+        function base64UrlToUint8Array(base64Url) {
+            // Convert URL-safe Base64 to standard Base64
+            let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            // Add padding if needed
+            while (base64.length % 4) {
+                base64 += '=';
+            }
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes;
+        }
+        </script>
+    """)
+
+@app.route("/get-salt/<username>")
+def get_salt(username):
+    """Get user's salt for client-side hashing"""
+    users = load_users()
+    user = users.get(username)
+    if not user or 'salt' not in user:
+        return jsonify({"error": "User not found"}), 404
+    
+    return jsonify({"salt": user["salt"]})
+
+@app.route("/get-user-hash/<username>")
+def get_user_hash(username):
+    """Get user's hash for comparison"""
+    users = load_users()
+    user = users.get(username)
+    if not user or 'hash' not in user:
+        return jsonify({"error": "User not found"}), 404
+    
+    return jsonify({"hash": user["hash"]})
+
+@app.route("/implicit-login/challenge", methods=["POST"])
+def implicit_login_challenge():
+    """
+    Schritt 1+2 des Protokolls:
+    1. Client → Server: username, encrypted_nonce
+    2. Server → Client: encrypted_response (mit client_nonce, server_nonce, session_id, session_key)
+    """
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        encrypted_nonce = data.get('encrypted_nonce')
+        
+        if not all([username, encrypted_nonce]):
+            return jsonify({"success": False, "error": "Missing data"})
+        
+        # Verify user exists and has password
+        users = load_users()
+        user = users.get(username)
+        if not user or 'hash' not in user:
+            return jsonify({"success": False, "error": "User not found or no password set"})
+        
+        # Get shared key from user's password hash
+        shared_key_b64 = user['hash']  # This is the shared secret
+        
+        # Decrypt client nonce (AES-GCM)
+        client_nonce = decrypt_aes(encrypted_nonce, shared_key_b64)
+        if client_nonce is None:
+            return jsonify({"success": False, "error": "Invalid encryption or authentication failed"})
+        
+        # Generate server nonce and session data
+        server_nonce = str(int(time.time() * 1000))
+        session_id = secrets.token_urlsafe(16)
+        session_key = secrets.token_urlsafe(32)
+        
+        # Create response payload
+        response_payload = {
+            "client_nonce": client_nonce,    # Proof server could decrypt
+            "server_nonce": server_nonce,
+            "session_id": session_id,
+            "session_key": session_key
+        }
+        
+        # Encrypt response with shared key (AES-GCM)
+        encrypted_response = encrypt_aes(json.dumps(response_payload), shared_key_b64)
+        if encrypted_response is None:
+            return jsonify({"success": False, "error": "AES encryption failed"})
+        
+        # Store session
+        implicit_sessions[session_id] = {
+            "username": username,
+            "session_key": session_key,
+            "client_nonce": client_nonce,
+            "server_nonce": server_nonce,
+            "created_at": time.time()
+        }
+        
+        # Return only encrypted data
+        return jsonify({
+            "success": True,
+            "encrypted_response": encrypted_response
+        })
+        
+    except Exception as e:
+        print(f"Error in implicit login challenge: {e}")
+        return jsonify({"success": False, "error": "Authentication failed"})
+
+@app.route("/implicit-login/message", methods=["POST"])
+def implicit_login_message():
+    """
+    Schritt 3+4 des Protokolls:
+    Verschlüsselte Kommunikation mit Session-Key
+    """
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        encrypted_message = data.get('encrypted_message')
+        
+        if not all([session_id, encrypted_message]):
+            return jsonify({"success": False, "error": "Missing data"})
+        
+        # Get session
+        session_data = implicit_sessions.get(session_id)
+        if not session_data:
+            return jsonify({"success": False, "error": "Invalid session"})
+        
+        # Check session age (5 minutes max)
+        if time.time() - session_data['created_at'] > 300:
+            del implicit_sessions[session_id]
+            return jsonify({"success": False, "error": "Session expired"})
+        
+        # Decrypt message with session key
+        message = decrypt_with_session_key(encrypted_message, session_data['session_key'])
+        if message is None:
+            return jsonify({"success": False, "error": "Message decryption failed"})
+        
+        # Process message (echo back with timestamp)
+        response_message = f"Echo von {session_data['username']}: {message} (um {time.strftime('%H:%M:%S')})"
+        
+        # Encrypt response with session key
+        encrypted_response = encrypt_with_session_key(response_message, session_data['session_key'])
+        if encrypted_response is None:
+            return jsonify({"success": False, "error": "Response encryption failed"})
+        
+        return jsonify({
+            "success": True,
+            "encrypted_response": encrypted_response
+        })
+        
+    except Exception as e:
+        print(f"Error in implicit login message: {e}")
+        return jsonify({"success": False, "error": "Message processing failed"})
+
+@app.route("/implicit-login/status", methods=["GET"])
+def implicit_login_status():
+    """Debug: Zeige aktive Sessions"""
+    active_sessions = []
+    current_time = time.time()
+    
+    for session_id, session_data in list(implicit_sessions.items()):
+        age = current_time - session_data['created_at']
+        if age > 300:  # 5 minutes
+            del implicit_sessions[session_id]
+        else:
+            active_sessions.append({
+                "session_id": session_id,
+                "username": session_data['username'],
+                "age_seconds": int(age),
+                "expires_in": int(300 - age)
+            })
+    
+    return jsonify({
+        "active_sessions": len(active_sessions),
+        "sessions": active_sessions
+    })
 
 # Passkey Routes
 @app.route("/register-passkey", methods=["GET", "POST"])
@@ -714,9 +1546,9 @@ def passkey_authenticate_complete():
 if __name__ == "__main__":
     # Check if SSL certificates exist
     if os.path.exists("ssl/cert.pem") and os.path.exists("ssl/key.pem"):
-        app.run(host="0.0.0.0", port=5000, ssl_context=('ssl/cert.pem', 'ssl/key.pem'), debug=True)
+        app.run(host="0.0.0.0", port=8080, ssl_context=('ssl/cert.pem', 'ssl/key.pem'), debug=True)
     else:
         print("SSL certificates not found. Please run install.sh first or generate certificates manually.")
         print("For testing without SSL, the app will run on HTTP (Passkeys require HTTPS)")
-        app.run(host="0.0.0.0", port=5000, debug=True)
+        app.run(host="0.0.0.0", port=8080, debug=True)
 
