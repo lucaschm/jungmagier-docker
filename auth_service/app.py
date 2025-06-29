@@ -1546,9 +1546,9 @@ def passkey_authenticate_complete():
 if __name__ == "__main__":
     # Check if SSL certificates exist
     if os.path.exists("ssl/cert.pem") and os.path.exists("ssl/key.pem"):
-        app.run(host="0.0.0.0", port=8080, ssl_context=('ssl/cert.pem', 'ssl/key.pem'), debug=True)
+        app.run(host="0.0.0.0", port=5000, ssl_context=('ssl/cert.pem', 'ssl/key.pem'), debug=True)
     else:
         print("SSL certificates not found. Please run install.sh first or generate certificates manually.")
         print("For testing without SSL, the app will run on HTTP (Passkeys require HTTPS)")
-        app.run(host="0.0.0.0", port=8080, debug=True)
+        app.run(host="0.0.0.0", port=5000, debug=True)
 
