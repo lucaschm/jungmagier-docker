@@ -9,9 +9,8 @@ from webauthn.helpers.cose import COSEAlgorithmIdentifier
 import uuid
 import time
 import secrets
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import cryptography
+
 
 app = Flask(__name__)
 app.secret_key = os.urandom(16)
@@ -73,35 +72,13 @@ def hash_password(password, salt=None):
     hash_ = hashlib.pbkdf2_hmac("sha256", password, salt, 100000)
     return base64.b64encode(salt).decode(), base64.b64encode(hash_).decode()
 
-def derive_shared_key(username):
-    """Derive shared encryption key from user's password hash"""
-    users = load_users()
-    user = users.get(username)
-    if not user:
-        return None
-    
-    # Use password hash as shared secret
-    if 'hash' in user:
-        shared_secret = base64.b64decode(user['hash'])
-    else:
-        return None
-    
-    # Derive a proper encryption key using PBKDF2
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=b'implicit_login_salt',  # Fixed salt for consistency
-        iterations=1000,  # Fewer iterations since we're deriving from already-hashed data
-    )
-    key = base64.urlsafe_b64encode(kdf.derive(shared_secret))
-    return Fernet(key)
 
 def encrypt_aes(plaintext, key_b64):
     """AES-GCM encryption"""
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         
-        # Use first 32 bytes of PBKDF2 hash as AES-256 key
+        # Use first 32 bytes of PBKDF2 (Password-Based Key Derivation Function 2) hash as AES-256 key
         key_bytes = base64.b64decode(key_b64)[:32]
         
         # Generate random nonce (96 bits for GCM)
@@ -122,7 +99,7 @@ def encrypt_aes(plaintext, key_b64):
         return None
 
 def decrypt_aes(ciphertext_b64, key_b64):
-    """AES-GCM decryption (production-ready)"""
+    """AES-GCM decryption"""
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         
@@ -390,7 +367,8 @@ def welcome():
         <p><a href="/register-passkey">Neuen Passkey registrieren</a></p>
         <p><a href="/logout">Logout</a></p>
         """
-    return redirect(url_for("login"))
+#
+#     return redirect(url_for("login"))
 
 @app.route("/logout")  
 def logout():
@@ -1546,9 +1524,9 @@ def passkey_authenticate_complete():
 if __name__ == "__main__":
     # Check if SSL certificates exist
     if os.path.exists("ssl/cert.pem") and os.path.exists("ssl/key.pem"):
-        app.run(host="0.0.0.0", port=5000, ssl_context=('ssl/cert.pem', 'ssl/key.pem'), debug=True)
+        app.run(host="0.0.0.0", port=8080, ssl_context=('ssl/cert.pem', 'ssl/key.pem'), debug=True)
     else:
         print("SSL certificates not found. Please run install.sh first or generate certificates manually.")
         print("For testing without SSL, the app will run on HTTP (Passkeys require HTTPS)")
-        app.run(host="0.0.0.0", port=5000, debug=True)
+        app.run(host="0.0.0.0", port=8080, debug=True)
 
